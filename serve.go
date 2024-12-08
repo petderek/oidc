@@ -13,9 +13,31 @@ import (
 )
 
 type OIDCHandler struct {
-	Upstream    *oidc.Provider
-	OauthConfig *oauth2.Config
-	Parser      *jwt.Parser
+	Config      Config
+	upstream    *oidc.Provider
+	once        sync.Once
+	oauthConfig *oauth2.Config
+	parser      *jwt.Parser
+}
+
+func New(cfg Config) (*OIDCHandler, error) {
+	provider, err := oidc.NewProvider(context.Background(), cfg.Get("ISSUER"))
+	if err != nil {
+		return nil, err
+	}
+	oauthConfig := &oauth2.Config{
+		ClientID:     cfg.Get("CLIENT_ID"),
+		ClientSecret: cfg.Get("CLIENT_SECRET"),
+		RedirectURL:  cfg.Get("REDIRECT_URL"),
+		Endpoint:     provider.Endpoint(),
+		Scopes:       []string{oidc.ScopeOpenID, "email", "openid", "phone"},
+	}
+	return &OIDCHandler{
+		Config:      cfg,
+		upstream:    provider,
+		oauthConfig: oauthConfig,
+		parser:      nil,
+	}, nil
 }
 
 func (o *OIDCHandler) home(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +63,7 @@ func (o *OIDCHandler) home(w http.ResponseWriter, r *http.Request) {
 
 func (o *OIDCHandler) login(res http.ResponseWriter, request *http.Request) {
 	state, _ := uuid.NewV7()
-	url := o.OauthConfig.AuthCodeURL(state.String(), oauth2.AccessTypeOffline)
+	url := o.oauthConfig.AuthCodeURL(state.String(), oauth2.AccessTypeOffline)
 	slog.Info("redirect to: " + url)
 	http.Redirect(res, request, url, http.StatusFound)
 }
@@ -51,7 +73,7 @@ func (o *OIDCHandler) callback(res http.ResponseWriter, req *http.Request) {
 	code := req.URL.Query().Get("code")
 
 	// Exchange the authorization code for a token
-	rawToken, err := o.OauthConfig.Exchange(ctx, code)
+	rawToken, err := o.oauthConfig.Exchange(ctx, code)
 	if err != nil {
 		http.Error(res, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
 		return

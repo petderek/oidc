@@ -1,27 +1,34 @@
 package oidc_backend
 
 import (
+	"context"
+	"github.com/coreos/go-oidc"
+	"golang.org/x/oauth2"
+	"log"
 	"net/http"
 	"testing"
-	"time"
 )
 
 func TestServe(t *testing.T) {
-	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
-		if f, err := req.Cookie("foo"); err == nil {
-			println("found cookie: ", f.String())
-		}
-		c := &http.Cookie{
-			Name:    "foo",
-			Value:   "bar",
-			Expires: time.Now().Add(time.Hour),
-			/*Secure:      true,
-			HttpOnly:    true,
-			SameSite:    http.SameSiteLaxMode,*/
-		}
-		http.SetCookie(res, c)
-		res.Write([]byte("<h1>hello</h1>"))
-	})
+	provider, err := oidc.NewProvider(context.Background(), "")
+	if err != nil {
+		log.Fatalf("Failed to create OIDC provider: %v", err)
+	}
+	oauth2Config := &oauth2.Config{
+		ClientID:     "",
+		ClientSecret: "",
+		RedirectURL:  "https://localhost/callback",
+		Endpoint:     provider.Endpoint(),
+		Scopes:       []string{oidc.ScopeOpenID, "email", "openid", "phone"},
+	}
+	oidc := &OIDCHandler{
+		Upstream:    provider,
+		OauthConfig: oauth2Config,
+		Parser:      nil,
+	}
 
-	http.ListenAndServe("localhost:8080", nil)
+	err = http.ListenAndServeTLS("localhost:443", "key.pem", "crt.pem", oidc)
+	if err != nil {
+		t.Fatalf("failed server: %s", err)
+	}
 }

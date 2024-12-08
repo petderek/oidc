@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"github.com/coreos/go-oidc"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	"log/slog"
 	"net/http"
+	"sync"
 )
 
 type OIDCHandler struct {
@@ -16,18 +19,30 @@ type OIDCHandler struct {
 }
 
 func (o *OIDCHandler) home(w http.ResponseWriter, r *http.Request) {
-	html := `
+	slog.Info("made it here")
+	var msg string
+	switch {
+	case o.checkToken(r):
+		msg = "you are logged in"
+	case o.refreshToken(w, r):
+		msg = "you are refreshed"
+	default:
+		msg = "you are not logged in"
+	}
+	html := fmt.Sprintf(`
         <html>
         <body>
             <h1>basic app</h1>
+            <h2>%s</h2>
         </body>
-        </html>`
+        </html>`, msg)
 	fmt.Fprint(w, html)
 }
 
 func (o *OIDCHandler) login(res http.ResponseWriter, request *http.Request) {
-	state := "TODOSTATE"
-	url := o.OauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	state, _ := uuid.NewV7()
+	url := o.OauthConfig.AuthCodeURL(state.String(), oauth2.AccessTypeOffline)
+	slog.Info("redirect to: " + url)
 	http.Redirect(res, request, url, http.StatusFound)
 }
 
@@ -57,6 +72,13 @@ func (o *OIDCHandler) callback(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// set the token as a cookie
+	cookie := &http.Cookie{
+		Name:  "token",
+		Value: tokenString,
+	}
+	http.SetCookie(res, cookie)
+
 	// Define the HTML template
 	res.Write([]byte("success"))
 }
@@ -64,19 +86,6 @@ func (o *OIDCHandler) callback(res http.ResponseWriter, req *http.Request) {
 func (o *OIDCHandler) logout(writer http.ResponseWriter, request *http.Request) {
 	// TODO clear
 	http.Redirect(writer, request, "/", http.StatusFound)
-}
-
-func (o *OIDCHandler) HandleHTTP(res http.ResponseWriter, req *http.Request) {
-	var msg string
-	switch {
-	case o.checkToken(req):
-		msg = "token is valid"
-	case o.refreshToken(res, req):
-		msg = "token was refreshed"
-	default:
-		msg = "no token"
-	}
-	res.Write([]byte(msg))
 }
 
 func (o *OIDCHandler) checkToken(req *http.Request) bool {
@@ -92,4 +101,18 @@ func (o *OIDCHandler) checkToken(req *http.Request) bool {
 func (o *OIDCHandler) refreshToken(res http.ResponseWriter, req *http.Request) bool {
 	// TODO
 	return false
+}
+
+var mux = http.NewServeMux()
+var once sync.Once
+
+func (o *OIDCHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
+	slog.Info("it worked")
+	once.Do(func() {
+		mux.HandleFunc("/", o.home)
+		mux.HandleFunc("/login", o.login)
+		mux.HandleFunc("/logout", o.logout)
+		mux.HandleFunc("/callback", o.callback)
+	})
+	mux.ServeHTTP(res, req)
 }

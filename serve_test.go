@@ -1,4 +1,4 @@
-package oidc_backend
+package oidc
 
 import (
 	"net/http"

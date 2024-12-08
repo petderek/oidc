@@ -1,4 +1,4 @@
-module oidc-backend
+module oidc
 
 go 1.23
 

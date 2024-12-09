@@ -18,7 +18,7 @@ type OIDCHandler struct {
 	Config      Config
 	keyfunc     keyfunc.Keyfunc
 	upstream    *oidc.Provider
-	once        sync.Once
+	domain      string
 	oauthConfig *oauth2.Config
 	parser      *jwt.Parser
 }
@@ -44,6 +44,7 @@ func New(cfg Config) (*OIDCHandler, error) {
 		Config:      cfg,
 		upstream:    provider,
 		oauthConfig: oauthConfig,
+		domain:      cfg.Get("DOMAIN"),
 		parser:      &jwt.Parser{},
 		keyfunc:     kf,
 	}, nil
@@ -104,8 +105,12 @@ func (o *OIDCHandler) callback(res http.ResponseWriter, req *http.Request) {
 
 	// set the token as a cookie
 	http.SetCookie(res, &http.Cookie{
-		Name:  "token",
-		Value: tokenString,
+		Name:     "token",
+		Value:    tokenString,
+		SameSite: http.SameSiteLaxMode,
+		Domain:   o.Config.Get("DOMAIN"),
+		Secure:   true,
+		HttpOnly: true,
 	})
 	http.Redirect(res, req, "/", http.StatusFound)
 }

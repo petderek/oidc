@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"github.com/MicahParks/keyfunc/v3"
 	"github.com/coreos/go-oidc"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -10,10 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type OIDCHandler struct {
 	Config      Config
+	keyfunc     keyfunc.Keyfunc
 	upstream    *oidc.Provider
 	once        sync.Once
 	oauthConfig *oauth2.Config
@@ -21,7 +24,8 @@ type OIDCHandler struct {
 }
 
 func New(cfg Config) (*OIDCHandler, error) {
-	provider, err := oidc.NewProvider(context.Background(), cfg.Get("ISSUER"))
+	issuer := cfg.Get("ISSUER")
+	provider, err := oidc.NewProvider(context.Background(), issuer)
 	if err != nil {
 		return nil, err
 	}
@@ -32,19 +36,28 @@ func New(cfg Config) (*OIDCHandler, error) {
 		Endpoint:     provider.Endpoint(),
 		Scopes:       []string{oidc.ScopeOpenID, "email", "openid", "phone"},
 	}
+	kf, err := keyfunc.NewDefaultCtx(context.Background(), []string{issuer + "/.well-known/jwks.json"})
+	if err != nil {
+		return nil, err
+	}
 	return &OIDCHandler{
 		Config:      cfg,
 		upstream:    provider,
 		oauthConfig: oauthConfig,
-		parser:      nil,
+		parser:      &jwt.Parser{},
+		keyfunc:     kf,
 	}, nil
 }
 
 func (o *OIDCHandler) home(w http.ResponseWriter, r *http.Request) {
 	slog.Info("made it here")
 	var msg string
+	var token string
+	if cookie, _ := r.Cookie("token"); cookie != nil {
+		token = cookie.Value
+	}
 	switch {
-	case o.checkToken(r):
+	case o.checkToken(token):
 		msg = "you are logged in"
 	case o.refreshToken(w, r):
 		msg = "you are refreshed"
@@ -80,41 +93,37 @@ func (o *OIDCHandler) callback(res http.ResponseWriter, req *http.Request) {
 	}
 	tokenString := rawToken.AccessToken
 
+	// todo store some datas in the backend
+	slog.Info("id " + rawToken.Extra("id_token").(string))
+
 	// Parse the token
-	token, _, err := new(jwt.Parser).ParseUnverified(tokenString, jwt.MapClaims{})
-	if err != nil {
+	if !o.checkToken(tokenString) {
 		fmt.Printf("Error parsing token: %v\n", err)
 		return
 	}
 
-	// Check if the token is valid and extract claims
-	_, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		http.Error(res, "Invalid claims", http.StatusBadRequest)
-		return
-	}
-
 	// set the token as a cookie
-	cookie := &http.Cookie{
+	http.SetCookie(res, &http.Cookie{
 		Name:  "token",
 		Value: tokenString,
-	}
-	http.SetCookie(res, cookie)
-
-	// Define the HTML template
-	res.Write([]byte("success"))
+	})
+	http.Redirect(res, req, "/", http.StatusFound)
 }
 
-func (o *OIDCHandler) logout(writer http.ResponseWriter, request *http.Request) {
-	// TODO clear
-	http.Redirect(writer, request, "/", http.StatusFound)
+func (o *OIDCHandler) logout(res http.ResponseWriter, req *http.Request) {
+	// clear cookie and force expire
+	http.SetCookie(res, &http.Cookie{Name: "token", Value: "", Expires: time.Now().Add(-time.Hour)})
+	http.Redirect(res, req, "/", http.StatusFound)
 }
 
-func (o *OIDCHandler) checkToken(req *http.Request) bool {
+func (o *OIDCHandler) checkToken(token string) bool {
 	// do i have a jwt cookie?
-	tokenString, _ := req.Cookie("token")
-	// TODO is it valid?
-	if tokenString == nil {
+	if token == "" {
+		return false
+	}
+	_, err := o.parser.Parse(token, o.keyfunc.KeyfuncCtx(context.TODO()))
+	if err != nil {
+		slog.Error("jwt failed: " + err.Error())
 		return false
 	}
 	return true
